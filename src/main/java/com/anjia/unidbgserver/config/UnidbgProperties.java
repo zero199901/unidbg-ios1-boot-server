@@ -25,4 +25,9 @@ public class UnidbgProperties {
      * 是否使用异步多线程
      */
     boolean async = true;
+
+    /**
+     * IPA 文件的绝对路径
+     */
+    String ipaPath;
 }

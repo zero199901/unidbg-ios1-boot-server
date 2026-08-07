@@ -4,5 +4,6 @@ server:
 application:
   unidbg:
     dynarmic: false
-    verbose: false
+    verbose: true
     async: false
+    ipa-path: C:/Users/l/Desktop/豆包-11.8.0.ipa

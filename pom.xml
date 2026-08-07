@@ -25,6 +25,7 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
         <unidbg.version>0.9.9</unidbg.version>
+        <unidbg-ios.version>0.9.9-bootstrap-fix</unidbg-ios.version>
         <commons-lang3.version>3.12.0</commons-lang3.version>
         <commons-io.version>2.11.0</commons-io.version>
         <streamex.version>0.7.3</streamex.version>
@@ -70,8 +71,8 @@
         </dependency>
         <dependency>
             <groupId>com.github.zhkl0228</groupId>
-            <artifactId>unidbg-android</artifactId>
-            <version>${unidbg.version}</version>
+            <artifactId>unidbg-ios</artifactId>
+            <version>${unidbg-ios.version}</version>
         </dependency>
         <dependency>
             <groupId>com.github.zhkl0228</groupId>
