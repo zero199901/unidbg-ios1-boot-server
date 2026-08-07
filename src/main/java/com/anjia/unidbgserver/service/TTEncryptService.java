@@ -3,7 +3,6 @@ package com.anjia.unidbgserver.service;
 import com.anjia.unidbgserver.config.UnidbgProperties;
 import com.github.unidbg.Emulator;
 import com.github.unidbg.Module;
-import com.github.unidbg.Symbol;
 import com.github.unidbg.arm.backend.DynarmicFactory;
 import com.github.unidbg.file.ios.DarwinFileIO;
 import com.github.unidbg.ios.MachOLoader;
@@ -21,31 +20,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
-/**
- * iOS Grace (doubao) unidbg 服务。
- *
- * 关键修复：unidbg-ios-0.9.9-bootstrap-fix.jar
- *   MachOLoader.java line 368: loadInternal(url, false→true, false)
- *   让 bootstrap_objc 的 __mod_init_func 正常执行，
- *   初始化 ObjC 全局 hash table，修复 GetClassHook null deref。
- *
- * 调用链：
- *   setObjcRuntime(true) + setCallInitFunction(false)
- *   → bootstrap 初始化 → libobjc 初始化 → _dyld_objc_notify_register 设置
- *   → Grace 类注册 → objc_getClass("BDTGAES256GCM") 可用
- *   → +[BDTGAES256GCM encryptData:key:error:] IMP=0x1005dc348
- */
 @Slf4j
 public class TTEncryptService {
 
     private final Emulator<DarwinFileIO> emulator;
     private final Module graceModule;
     private final UnidbgProperties props;
-
-    // libobjc C 符号（绕开 JNA ObjcClass 结构体读取 bug）
-    private Symbol objc_getClass;
-    private Symbol sel_registerName;
-    private Symbol objc_msgSend;
 
     @SneakyThrows
     TTEncryptService(UnidbgProperties unidbgProperties) {
@@ -59,7 +39,7 @@ public class TTEncryptService {
         workDir.mkdirs();
 
         IpaLoader64 loader = new IpaLoader64(ipaFile, workDir);
-        loader.setForceCallInit(true); // 强制系统库初始化（libobjc 等）
+        // Don't force init — let it run naturally but some may fail
         if (unidbgProperties.isDynarmic()) {
             loader.addBackendFactory(new DynarmicFactory(true));
         }
@@ -69,110 +49,61 @@ public class TTEncryptService {
             public void configure(Emulator<DarwinFileIO> emulator, String executableBundlePath,
                                   File rootDir, String bundleIdentifier) {
                 MachOLoader mem = (MachOLoader) emulator.getMemory();
-                // bootstrap_objc 的 forceCallInit 已在 patched jar 里改为 true
-                // 系统库 init 由 loader.setForceCallInit(true) 触发
-                // Grace 是 payload module，在 loadInternal 里被 isPayloadModule 跳过
-                mem.setObjcRuntime(true);
-                // callInitFunction 保持 false（由 forceCallInit 参数控制系统库 init）
+                // Don't load bootstrap_objc — we'll use direct addresses
             }
 
             @Override
             public void onExecutableLoaded(Emulator<DarwinFileIO> emulator, MachOModule executable) {
                 MachOLoader mem = (MachOLoader) emulator.getMemory();
-                mem.setCallInitFunction(false); // 阻止 Grace 的 __init_func
 
-                // _dyld_objc_notify_register SVC 未被任何 bundled stub 库触发。
-                // 直接把 override libobjc 的 _map_images（0xd79c）写入 _objcNotifyMapped，
-                // 再对 Grace 手动触发类注册，跳过整条 SVC 调用链。
                 Module libobjc = mem.findModule("libobjc.A.dylib");
                 if (libobjc != null) {
-                    // 1. 先调 __objc_init 初始化 ObjC runtime（哈希表、lock、TLS 等）
-                    //    _objc_init offset 0x1ce18 in override libobjc
-                    long objcInitAddr = libobjc.base + 0x1ce18L;
-                    try {
-                        emulator.eFunc(objcInitAddr);
-                        log.info("__objc_init called @ 0x{}", Long.toHexString(objcInitAddr));
-                    } catch (RuntimeException e) {
-                        log.warn("__objc_init threw (may be partial): {}", e.getMessage());
-                    }
-
-                    // 2. 注入 _map_images 为 _objcNotifyMapped
-                    long mapImagesAddr = libobjc.base + 0xd79cL;
-                    UnidbgPointer mapImagesPtr = emulator.getMemory().pointer(mapImagesAddr);
-                    try {
-                        java.lang.reflect.Field f = mem.getClass().getDeclaredField("_objcNotifyMapped");
-                        f.setAccessible(true);
-                        f.set(mem, mapImagesPtr);
-                        log.info("Injected _objcNotifyMapped = _map_images @ 0x{}", Long.toHexString(mapImagesAddr));
-                    } catch (Exception e) {
-                        log.warn("_objcNotifyMapped inject failed: {}", e.getMessage());
-                    }
-
-                    // 触发 Grace 的 ObjC class mapping
-                    try {
-                        java.lang.reflect.Field f = mem.getClass().getDeclaredField("_objcNotifyMapped");
-                        f.setAccessible(true);
-                        UnidbgPointer notify = (UnidbgPointer) f.get(mem);
-                        if (notify != null) {
-                            java.lang.reflect.Method m2 = executable.getClass()
-                                    .getDeclaredMethod("callObjcNotifyMapped", UnidbgPointer.class);
-                            m2.setAccessible(true);
-                            m2.invoke(executable, notify);
-                            log.info("callObjcNotifyMapped invoked for Grace");
-                        }
-                    } catch (Exception e) {
-                        log.warn("callObjcNotifyMapped failed: {}", e.getMessage());
-                    }
-
-                    // 解析 libobjc C 符号
                     objc_getClass    = libobjc.findSymbolByName("_objc_getClass");
                     sel_registerName = libobjc.findSymbolByName("_sel_registerName");
                     objc_msgSend     = libobjc.findSymbolByName("_objc_msgSend");
-                    log.info("libobjc symbols: getClass={} selReg={} msgSend={}",
-                            objc_getClass != null, sel_registerName != null, objc_msgSend != null);
+
+                    // Use HookZz to replace objc_msgSend and handle NSData methods
+                    HookZz hook = HookZz.getInstance(emulator);
+                    hook.replace(objc_msgSend.getAddress(), new ReplaceCallback() {
+                        @Override
+                        public void processArgs(Emulator<?> emulator, long trampoline, Object... context) {
+                            // Args: x0=receiver, x1=selector, x2+...=method args
+                        }
+                    }, null);
                 }
-                log.info("onExecutableLoaded done. base=0x{}", Long.toHexString(executable.base));
+
+                log.info("Grace loaded @ 0x{}", Long.toHexString(executable.base));
             }
         });
 
         emulator = loaded.getEmulator();
         graceModule = loaded.getExecutable();
-        log.info("Grace loaded: bundleId={} v={}", loaded.getBundleIdentifier(), loaded.getBundleVersion());
+        log.info("Ready: bundleId={} v={}", loaded.getBundleIdentifier(), loaded.getBundleVersion());
     }
 
     public byte[] ttEncrypt(String body) {
         byte[] input = body != null ? body.getBytes(StandardCharsets.UTF_8) : new byte[0];
         if (props.isVerbose()) Inspector.inspect(input, "ttEncrypt input");
 
-        if (objc_getClass == null || sel_registerName == null || objc_msgSend == null) {
-            log.warn("libobjc symbols not available");
+        if (sel_registerName == null || objc_msgSend == null || objc_getClass == null) {
+            log.warn("ObjC runtime not ready");
             return new byte[0];
         }
 
-        // 1. 获取 BDTGAES256GCM 类
-        Number bdtgNum = objc_getClass.call(emulator, "BDTGAES256GCM");
-        long bdtgClass = bdtgNum.longValue();
-        if (bdtgClass == 0L || bdtgClass == -1L) {
-            log.warn("BDTGAES256GCM not found (0x{})", Long.toHexString(bdtgClass));
-            return new byte[0];
-        }
-        log.info("BDTGAES256GCM=0x{}", Long.toHexString(bdtgClass));
-
-        // 2. 获取 NSData 类
-        Number nsDataNum = objc_getClass.call(emulator, "NSData");
-        long nsDataClass = nsDataNum.longValue();
-        if (nsDataClass == 0L || nsDataClass == -1L) {
-            log.warn("NSData not found");
+        // Get NSData class and create real NSData objects via objc_msgSend
+        Number nsDataClassNum = objc_getClass.call(emulator, "NSData");
+        long nsDataClass = nsDataClassNum.longValue();
+        if (nsDataClass == 0L) {
+            log.warn("NSData class not found");
             return new byte[0];
         }
 
-        // 3. 注册 selectors
-        Number selDwbl    = sel_registerName.call(emulator, "dataWithBytes:length:");
+        Number selDwbl = sel_registerName.call(emulator, "dataWithBytes:length:");
         Number selEncrypt = sel_registerName.call(emulator, "encryptData:key:error:");
-        Number selLength  = sel_registerName.call(emulator, "length");
-        Number selBytes   = sel_registerName.call(emulator, "bytes");
+        Number selLength = sel_registerName.call(emulator, "length");
+        Number selBytes = sel_registerName.call(emulator, "bytes");
 
-        byte[] keyBytes = new byte[32]; // AES-256 全零 key（替换为实际 key）
+        byte[] keyBytes = new byte[32];
         MemoryBlock inputBlock = emulator.getMemory().malloc(Math.max(input.length, 1), true);
         MemoryBlock keyBlock   = emulator.getMemory().malloc(keyBytes.length, true);
         try {
@@ -181,43 +112,49 @@ public class TTEncryptService {
             if (input.length > 0) inputPtr.write(input);
             keyPtr.write(keyBytes);
 
-            // 4. 创建 NSData
-            Number nsInput = objc_msgSend.call(emulator,
-                    nsDataClass, selDwbl.longValue(), inputPtr.peer, (long) input.length);
-            Number nsKey = objc_msgSend.call(emulator,
-                    nsDataClass, selDwbl.longValue(), keyPtr.peer, (long) keyBytes.length);
-
+            // Create NSData objects (may be _NSInlineData internally)
+            Number nsInput = objc_msgSend.call(emulator, nsDataClass, selDwbl.longValue(),
+                    inputPtr.peer, (long) input.length);
+            Number nsKey = objc_msgSend.call(emulator, nsDataClass, selDwbl.longValue(),
+                    keyPtr.peer, (long) keyBytes.length);
             if (nsInput.longValue() == 0L || nsKey.longValue() == 0L) {
                 log.warn("NSData creation failed");
                 return new byte[0];
             }
 
-            // 5. +[BDTGAES256GCM encryptData:key:error:]
-            Number resultObj;
+            // Call class method using objc_msgSend (not eFunc on IMP)
+            // For class method: objc_msgSend(class, selector, args...)
+            Number result;
             try {
-                resultObj = objc_msgSend.call(emulator,
-                        bdtgClass, selEncrypt.longValue(),
+                result = objc_msgSend.call(emulator, BDTGAES256GCM_CLASS, selEncrypt.longValue(),
                         nsInput.longValue(), nsKey.longValue(), 0L);
             } catch (RuntimeException e) {
-                log.warn("encryptData failed: {}", e.getMessage());
+                log.warn("encryptData call failed: {}", e.getMessage());
                 return new byte[0];
             }
 
-            long result = resultObj.longValue();
-            if (result == 0L || result == -1L) {
+            long rp = result.longValue();
+            if (rp == 0L || rp == -1L) {
                 log.warn("encryptData returned nil");
                 return new byte[0];
             }
 
-            // 6. 提取结果字节
-            Number lenNum = objc_msgSend.call(emulator, result, selLength.longValue());
-            int length = lenNum.intValue();
+            // Extract result using objc_msgSend to call length/bytes
+            Number len = objc_msgSend.call(emulator, rp, selLength.longValue());
+            int length = len.intValue();
             if (length <= 0 || length > 65536) {
-                log.warn("unexpected length: {}", length);
+                log.warn("bad result length {}", length);
                 return new byte[0];
             }
-            Number bytesPtr = objc_msgSend.call(emulator, result, selBytes.longValue());
-            return emulator.getMemory().pointer(bytesPtr.longValue()).getByteArray(0, length);
+
+            Number bp = objc_msgSend.call(emulator, rp, selBytes.longValue());
+            long bytesAddr = bp.longValue();
+            if (bytesAddr == 0L) {
+                log.warn("bytes returned null");
+                return new byte[0];
+            }
+
+            return emulator.getMemory().pointer(bytesAddr).getByteArray(0, length);
 
         } catch (RuntimeException e) {
             log.warn("ttEncrypt error: {}", e.getMessage());
@@ -230,6 +167,5 @@ public class TTEncryptService {
 
     public void destroy() throws IOException {
         emulator.close();
-        if (props.isVerbose()) log.info("destroy");
     }
 }
