@@ -79,38 +79,59 @@ public class TTEncryptService {
             @Override
             public void onExecutableLoaded(Emulator<DarwinFileIO> emulator, MachOModule executable) {
                 MachOLoader mem = (MachOLoader) emulator.getMemory();
-                // 阻止 Grace 的 __init_func 执行
-                mem.setCallInitFunction(false);
+                mem.setCallInitFunction(false); // 阻止 Grace 的 __init_func
 
-                // 如果 bootstrap 正常初始化，_objcNotifyMapped 现在应该已被设置
-                // 用反射重新触发 Grace 的类注册
-                try {
-                    java.lang.reflect.Field f = mem.getClass().getDeclaredField("_objcNotifyMapped");
-                    f.setAccessible(true);
-                    UnidbgPointer notify = (UnidbgPointer) f.get(mem);
-                    if (notify != null) {
-                        java.lang.reflect.Method m2 = executable.getClass()
-                                .getDeclaredMethod("callObjcNotifyMapped", UnidbgPointer.class);
-                        m2.setAccessible(true);
-                        m2.invoke(executable, notify);
-                        log.info("Grace classes registered: notify=0x{}", Long.toHexString(notify.peer));
-                    } else {
-                        log.warn("_objcNotifyMapped still null — bootstrap patch may not have taken effect");
-                    }
-                } catch (Exception e) {
-                    log.warn("callObjcNotifyMapped failed: {}", e.getMessage());
-                }
-
-                // 解析 libobjc C 符号
+                // _dyld_objc_notify_register SVC 未被任何 bundled stub 库触发。
+                // 直接把 override libobjc 的 _map_images（0xd79c）写入 _objcNotifyMapped，
+                // 再对 Grace 手动触发类注册，跳过整条 SVC 调用链。
                 Module libobjc = mem.findModule("libobjc.A.dylib");
                 if (libobjc != null) {
+                    // 1. 先调 __objc_init 初始化 ObjC runtime（哈希表、lock、TLS 等）
+                    //    _objc_init offset 0x1ce18 in override libobjc
+                    long objcInitAddr = libobjc.base + 0x1ce18L;
+                    try {
+                        emulator.eFunc(objcInitAddr);
+                        log.info("__objc_init called @ 0x{}", Long.toHexString(objcInitAddr));
+                    } catch (RuntimeException e) {
+                        log.warn("__objc_init threw (may be partial): {}", e.getMessage());
+                    }
+
+                    // 2. 注入 _map_images 为 _objcNotifyMapped
+                    long mapImagesAddr = libobjc.base + 0xd79cL;
+                    UnidbgPointer mapImagesPtr = emulator.getMemory().pointer(mapImagesAddr);
+                    try {
+                        java.lang.reflect.Field f = mem.getClass().getDeclaredField("_objcNotifyMapped");
+                        f.setAccessible(true);
+                        f.set(mem, mapImagesPtr);
+                        log.info("Injected _objcNotifyMapped = _map_images @ 0x{}", Long.toHexString(mapImagesAddr));
+                    } catch (Exception e) {
+                        log.warn("_objcNotifyMapped inject failed: {}", e.getMessage());
+                    }
+
+                    // 触发 Grace 的 ObjC class mapping
+                    try {
+                        java.lang.reflect.Field f = mem.getClass().getDeclaredField("_objcNotifyMapped");
+                        f.setAccessible(true);
+                        UnidbgPointer notify = (UnidbgPointer) f.get(mem);
+                        if (notify != null) {
+                            java.lang.reflect.Method m2 = executable.getClass()
+                                    .getDeclaredMethod("callObjcNotifyMapped", UnidbgPointer.class);
+                            m2.setAccessible(true);
+                            m2.invoke(executable, notify);
+                            log.info("callObjcNotifyMapped invoked for Grace");
+                        }
+                    } catch (Exception e) {
+                        log.warn("callObjcNotifyMapped failed: {}", e.getMessage());
+                    }
+
+                    // 解析 libobjc C 符号
                     objc_getClass    = libobjc.findSymbolByName("_objc_getClass");
                     sel_registerName = libobjc.findSymbolByName("_sel_registerName");
                     objc_msgSend     = libobjc.findSymbolByName("_objc_msgSend");
-                    log.info("libobjc symbols: getClass= selReg={} msgSend={}",
+                    log.info("libobjc symbols: getClass={} selReg={} msgSend={}",
                             objc_getClass != null, sel_registerName != null, objc_msgSend != null);
                 }
-                log.info("onExecutableLoaded: base=0x{}", Long.toHexString(executable.base));
+                log.info("onExecutableLoaded done. base=0x{}", Long.toHexString(executable.base));
             }
         });
 

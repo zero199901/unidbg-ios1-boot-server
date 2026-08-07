@@ -1,6 +1,13 @@
-# 基于unidbg0.9.9和spring boot 2.6.3开发的高并发server服务器
+# 基于unidbg-ios 0.9.9和spring boot 2.6.3开发的高并发server服务器
 
 ## 重要说明
+
+**iOS版本特性：**
+本项目已切换到 `unidbg-ios` 支持 iOS IPA 模拟，可用于豆包等 iOS 应用的加密算法模拟。
+
+- 使用 `unidbg-ios 0.9.9-bootstrap-fix` 版本（修复了 bootstrap_objc 初始化问题）
+- 支持通过 ObjC Runtime 调用 iOS 加密类
+- 需要在配置文件中指定 IPA 文件路径
 
 **注意：**
 本项目仅是unidbg项目的springweb的简单封装，如果遇到问题，请先看看[常见问题](QA.md)，如果还是不能解决，请尝试更换写法，包括但不限于：多线程改单线程，在请求方法new unidbg对象等。
@@ -23,6 +30,20 @@
 3. Idea 2021+
 4. 需要安装[Lombok插件](https://plugins.jetbrains.com/plugin/6317-lombok)
 5. 注意，很多人不会用多线程以及 unidbg 对多线程支持的不好，所以默认禁用多线程，如果需要启用，修改 application.yml 里的 async 为 true
+6. **iOS版本需要准备 IPA 文件**，并在 `application-dev.yml` 中配置 `ipa-path` 路径（支持相对路径和绝对路径）
+
+### 配置 IPA 路径
+
+编辑 `src/main/resources/application-dev.yml`：
+
+```yaml
+application:
+  unidbg:
+    dynarmic: false
+    verbose: true
+    async: false
+    ipa-path: ../apps/豆包-11.8.0.ipa  # 相对路径或绝对路径
+```
 
 ## 快速体验
 
@@ -85,6 +106,14 @@ Transfer/sec:    501.09KB
 
 ### 使用定制化/快照版unidbg
 
+**iOS版本说明：**
+本项目使用的是修复版 `unidbg-ios 0.9.9-bootstrap-fix`，已包含关键修复：
+- 修复了 `MachOLoader.java line 368`: `loadInternal(url, false→true, false)`
+- 让 bootstrap_objc 的 `__mod_init_func` 正常执行
+- 初始化 ObjC 全局 hash table，修复 GetClassHook null deref 问题
+
+如需使用其他版本：
+
 ```bash
 git clone https://github.com/zhkl0228/unidbg.git
 # 自己魔改
@@ -95,8 +124,11 @@ mvn clean install -Dgpg.skip=true -Dmaven.javadoc.skip=true -T10
 mvn clean install `-Dgpg.skip=true `-Dmaven.javadoc.skip=true `-T10
 ```
 
-以最新快照版 `0.9.10-SNAPSHOT` 为例，修改 `unidbg-boot-server/pom.xml` 里的 `<unidbg.version>0.9.9</unidbg.version>`
-为 `<unidbg.version>0.9.10-SNAPSHOT</unidbg.version>`
+修改 `unidbg-boot-server/pom.xml` 里的版本号：
+
+```xml
+<unidbg-ios.version>0.9.9-bootstrap-fix</unidbg-ios.version>
+```
 
 后续java打包或者docker不变
 

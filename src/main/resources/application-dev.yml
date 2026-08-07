@@ -6,4 +6,4 @@ application:
     dynarmic: false
     verbose: true
     async: false
-    ipa-path: C:/Users/l/Desktop/豆包-11.8.0.ipa
+    ipa-path: ../apps/豆包-11.8.0.ipa
