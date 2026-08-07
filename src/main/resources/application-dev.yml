@@ -7,3 +7,7 @@ application:
     verbose: true
     async: false
     ipa-path: ../apps/豆包-11.8.0.ipa
+
+logging:
+  level:
+    com.anjia.unidbgserver: DEBUG

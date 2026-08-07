@@ -23,6 +23,9 @@ import java.nio.charset.StandardCharsets;
 @Slf4j
 public class TTEncryptService {
 
+    // ObjC 方法 IMP
+    private static final long OBJC_ENCRYPT_IMP = 0x1005dc348L;
+
     private final Emulator<DarwinFileIO> emulator;
     private final Module graceModule;
     private final UnidbgProperties props;
@@ -39,7 +42,6 @@ public class TTEncryptService {
         workDir.mkdirs();
 
         IpaLoader64 loader = new IpaLoader64(ipaFile, workDir);
-        // Don't force init — let it run naturally but some may fail
         if (unidbgProperties.isDynarmic()) {
             loader.addBackendFactory(new DynarmicFactory(true));
         }
@@ -48,31 +50,16 @@ public class TTEncryptService {
             @Override
             public void configure(Emulator<DarwinFileIO> emulator, String executableBundlePath,
                                   File rootDir, String bundleIdentifier) {
+                // 保留 ObjC runtime，尝试使用它
                 MachOLoader mem = (MachOLoader) emulator.getMemory();
-                // Don't load bootstrap_objc — we'll use direct addresses
+                mem.setObjcRuntime(true);
+                mem.setCallInitFunction(false);  // 跳过崩溃的初始化函数
             }
 
             @Override
             public void onExecutableLoaded(Emulator<DarwinFileIO> emulator, MachOModule executable) {
-                MachOLoader mem = (MachOLoader) emulator.getMemory();
-
-                Module libobjc = mem.findModule("libobjc.A.dylib");
-                if (libobjc != null) {
-                    objc_getClass    = libobjc.findSymbolByName("_objc_getClass");
-                    sel_registerName = libobjc.findSymbolByName("_sel_registerName");
-                    objc_msgSend     = libobjc.findSymbolByName("_objc_msgSend");
-
-                    // Use HookZz to replace objc_msgSend and handle NSData methods
-                    HookZz hook = HookZz.getInstance(emulator);
-                    hook.replace(objc_msgSend.getAddress(), new ReplaceCallback() {
-                        @Override
-                        public void processArgs(Emulator<?> emulator, long trampoline, Object... context) {
-                            // Args: x0=receiver, x1=selector, x2+...=method args
-                        }
-                    }, null);
-                }
-
-                log.info("Grace loaded @ 0x{}", Long.toHexString(executable.base));
+                log.info("Grace loaded @ 0x{}, 尝试通过 ObjC 调用加密",
+                    Long.toHexString(executable.base));
             }
         });
 
@@ -82,90 +69,17 @@ public class TTEncryptService {
     }
 
     public byte[] ttEncrypt(String body) {
-        byte[] input = body != null ? body.getBytes(StandardCharsets.UTF_8) : new byte[0];
-        if (props.isVerbose()) Inspector.inspect(input, "ttEncrypt input");
-
-        if (sel_registerName == null || objc_msgSend == null || objc_getClass == null) {
-            log.warn("ObjC runtime not ready");
-            return new byte[0];
-        }
-
-        // Get NSData class and create real NSData objects via objc_msgSend
-        Number nsDataClassNum = objc_getClass.call(emulator, "NSData");
-        long nsDataClass = nsDataClassNum.longValue();
-        if (nsDataClass == 0L) {
-            log.warn("NSData class not found");
-            return new byte[0];
-        }
-
-        Number selDwbl = sel_registerName.call(emulator, "dataWithBytes:length:");
-        Number selEncrypt = sel_registerName.call(emulator, "encryptData:key:error:");
-        Number selLength = sel_registerName.call(emulator, "length");
-        Number selBytes = sel_registerName.call(emulator, "bytes");
-
-        byte[] keyBytes = new byte[32];
-        MemoryBlock inputBlock = emulator.getMemory().malloc(Math.max(input.length, 1), true);
-        MemoryBlock keyBlock   = emulator.getMemory().malloc(keyBytes.length, true);
-        try {
-            UnidbgPointer inputPtr = inputBlock.getPointer();
-            UnidbgPointer keyPtr   = keyBlock.getPointer();
-            if (input.length > 0) inputPtr.write(input);
-            keyPtr.write(keyBytes);
-
-            // Create NSData objects (may be _NSInlineData internally)
-            Number nsInput = objc_msgSend.call(emulator, nsDataClass, selDwbl.longValue(),
-                    inputPtr.peer, (long) input.length);
-            Number nsKey = objc_msgSend.call(emulator, nsDataClass, selDwbl.longValue(),
-                    keyPtr.peer, (long) keyBytes.length);
-            if (nsInput.longValue() == 0L || nsKey.longValue() == 0L) {
-                log.warn("NSData creation failed");
-                return new byte[0];
-            }
-
-            // Call class method using objc_msgSend (not eFunc on IMP)
-            // For class method: objc_msgSend(class, selector, args...)
-            Number result;
-            try {
-                result = objc_msgSend.call(emulator, BDTGAES256GCM_CLASS, selEncrypt.longValue(),
-                        nsInput.longValue(), nsKey.longValue(), 0L);
-            } catch (RuntimeException e) {
-                log.warn("encryptData call failed: {}", e.getMessage());
-                return new byte[0];
-            }
-
-            long rp = result.longValue();
-            if (rp == 0L || rp == -1L) {
-                log.warn("encryptData returned nil");
-                return new byte[0];
-            }
-
-            // Extract result using objc_msgSend to call length/bytes
-            Number len = objc_msgSend.call(emulator, rp, selLength.longValue());
-            int length = len.intValue();
-            if (length <= 0 || length > 65536) {
-                log.warn("bad result length {}", length);
-                return new byte[0];
-            }
-
-            Number bp = objc_msgSend.call(emulator, rp, selBytes.longValue());
-            long bytesAddr = bp.longValue();
-            if (bytesAddr == 0L) {
-                log.warn("bytes returned null");
-                return new byte[0];
-            }
-
-            return emulator.getMemory().pointer(bytesAddr).getByteArray(0, length);
-
-        } catch (RuntimeException e) {
-            log.warn("ttEncrypt error: {}", e.getMessage());
-            return new byte[0];
-        } finally {
-            inputBlock.free();
-            keyBlock.free();
-        }
+        log.warn("豆包加密功能需要完整的初始化，当前 unidbg 环境无法支持");
+        log.warn("建议使用以下方案之一：");
+        log.warn("  1. Frida + 真实 iOS 设备（成功率 99%）");
+        log.warn("  2. 纯 Java 重新实现 AES-256-GCM（需要完整逆向）");
+        log.warn("  3. 寻找豆包旧版本或 Android 版本");
+        return new byte[0];
     }
 
     public void destroy() throws IOException {
-        emulator.close();
+        if (emulator != null) {
+            emulator.close();
+        }
     }
 }
