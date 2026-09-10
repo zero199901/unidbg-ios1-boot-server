@@ -2,6 +2,7 @@ package com.anjia.unidbgserver;
 
 import com.anjia.unidbgserver.utils.ThymeleafUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -20,7 +21,8 @@ public class AutoGeneratorTest {
 
     // 这一步生成模板代码
     @Test
-    public void testTpl() {
+    @Disabled("代码生成会写入 src 目录；请在需要生成模板时手动执行")
+    public void testTpl() throws java.io.IOException {
         String serviceName = "MeiTuan";
 
         Map<String, Object> vars = new HashMap<>();

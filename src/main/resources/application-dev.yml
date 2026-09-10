@@ -6,7 +6,7 @@ application:
     dynarmic: false
     verbose: true
     async: false
-    ipa-path: ../apps/豆包-11.8.0.ipa
+    ipa-path: ./research/豆包-11.8.0.ipa
 
 logging:
   level:

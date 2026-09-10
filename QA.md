@@ -86,7 +86,7 @@ java ${JAVA_OPTS:''} \^M
 ```
 
 ### 打印native地址，so文件名，出入参
-参考  `src/test/java/com/anjia/unidbgserver/RegisterNativeTest.java`
+参考  `src/legacy-test/java/com/anjia/unidbgserver/RegisterNativeTest.java`（iOS 项目默认不编译；见 `src/legacy-test/README.md`）
 
 ### PrintUtils打印工具类的用法
 ```java

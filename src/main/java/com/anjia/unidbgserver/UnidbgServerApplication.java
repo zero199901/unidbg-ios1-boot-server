@@ -1,5 +1,8 @@
 package com.anjia.unidbgserver;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.SpringApplication;
@@ -13,12 +16,13 @@ import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
 
-@Slf4j
 @EnableAsync(proxyTargetClass = true)
 @ConfigurationPropertiesScan
 @EnableConfigurationProperties
 @SpringBootApplication(scanBasePackages = {"com.anjia"})
 public class UnidbgServerApplication {
+    private static final Logger log = LoggerFactory.getLogger(UnidbgServerApplication.class);
+
 
     private static final String SERVER_PORT = "server.port";
     private static final String SERVER_SERVLET_CONTEXT_PATH = "server.servlet.context-path";

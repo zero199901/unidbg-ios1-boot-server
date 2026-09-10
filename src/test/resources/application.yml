@@ -6,6 +6,7 @@ application:
     dynarmic: false
     verbose: false
     async: false
+    ipa-path: ${UNIDBG_IPA_PATH:research/豆包-11.8.0.ipa}
 
 spring:
   task:

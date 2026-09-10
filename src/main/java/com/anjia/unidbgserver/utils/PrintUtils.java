@@ -1,10 +1,14 @@
 package com.anjia.unidbgserver.utils;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 
-@Slf4j
 public class PrintUtils {
+    private static final Logger log = LoggerFactory.getLogger(PrintUtils.class);
+
 
     public static void printFileResolve(String pathname) {
         printFileResolve(pathname, null);

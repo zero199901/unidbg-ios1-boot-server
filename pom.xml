@@ -25,7 +25,7 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
         <unidbg.version>0.9.9</unidbg.version>
-        <unidbg-ios.version>0.9.9-bs2</unidbg-ios.version>
+        <unidbg-ios.version>0.9.9</unidbg-ios.version>
         <commons-lang3.version>3.12.0</commons-lang3.version>
         <commons-io.version>2.11.0</commons-io.version>
         <streamex.version>0.7.3</streamex.version>
@@ -103,6 +103,7 @@
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
+            <version>1.18.30</version>
             <optional>true</optional>
         </dependency>
         <dependency>
@@ -129,6 +130,13 @@
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- unidbg/unicorn uses native state; isolate every test class in its own JVM. -->
+                    <reuseForks>false</reuseForks>
                 </configuration>
             </plugin>
         </plugins>

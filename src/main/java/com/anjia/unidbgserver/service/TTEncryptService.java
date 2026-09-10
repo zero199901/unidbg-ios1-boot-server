@@ -1,5 +1,8 @@
 package com.anjia.unidbgserver.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.anjia.unidbgserver.config.UnidbgProperties;
 import com.github.unidbg.Emulator;
 import com.github.unidbg.Module;
@@ -29,8 +32,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 
-@Slf4j
 public class TTEncryptService {
+    private static final Logger log = LoggerFactory.getLogger(TTEncryptService.class);
+
 
     private static final long ENCRYPT_FUNC = 0x1005de758L;
 
@@ -225,6 +229,227 @@ public class TTEncryptService {
         } catch (Exception e) {
             log.error("Java AES-GCM 加密失败: {}", e.getMessage(), e);
             return new byte[0];
+        }
+    }
+
+    /**
+     * 解密 ttEncrypt 输出的 Base64 字节序列。
+     * 格式：[2字节头部 0x01BD] + [12字节IV] + [4字节填充] + [密文+16字节GCM TAG]
+     */
+    public byte[] ttDecrypt(byte[] encrypted) {
+        if (encrypted == null || encrypted.length < 18 + 16) {
+            throw new IllegalArgumentException("encrypted data too short: " + (encrypted == null ? 0 : encrypted.length));
+        }
+        if (encrypted[0] != 0x01 || (encrypted[1] & 0xFF) != 0xBD) {
+            throw new IllegalArgumentException(String.format("invalid header: %02X%02X", encrypted[0], encrypted[1] & 0xFF));
+        }
+        try {
+            byte[] iv = new byte[12];
+            System.arraycopy(encrypted, 2, iv, 0, 12);
+
+            int cipherLen = encrypted.length - 18;
+            byte[] ciphertext = new byte[cipherLen];
+            System.arraycopy(encrypted, 18, ciphertext, 0, cipherLen);
+
+            byte[] key = new byte[32]; // 与加密保持一致的零 key
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, iv));
+            byte[] plaintext = cipher.doFinal(ciphertext);
+
+            log.info("✓ 解密成功！输出长度: {}", plaintext.length);
+            if (props.isVerbose()) Inspector.inspect(plaintext, "ttDecrypt 输出");
+            return plaintext;
+        } catch (Exception e) {
+            log.error("ttDecrypt 失败: {}", e.getMessage(), e);
+            throw new RuntimeException("decrypt failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 解密 tc 协议格式的数据
+     * 格式：[2字节头部 "tc" 0x7463] + [2字节版本 0x0510] + [4字节元数据] + [bvx2 压缩数据]
+     *
+     * tc 协议使用 Apple libcompression 进行数据压缩
+     */
+    public byte[] tcDecrypt(byte[] encrypted) {
+        if (encrypted == null || encrypted.length < 8) {
+            throw new IllegalArgumentException("tc data too short: " + (encrypted == null ? 0 : encrypted.length));
+        }
+
+        // 检查 tc 魔术字
+        int magic = ((encrypted[0] & 0xFF) << 8) | (encrypted[1] & 0xFF);
+        if (magic != 0x7463) {  // "tc"
+            throw new IllegalArgumentException(String.format("invalid tc header: 0x%04X (expected 0x7463)", magic));
+        }
+
+        // 解析版本
+        int version = ((encrypted[2] & 0xFF) << 8) | (encrypted[3] & 0xFF);
+        log.debug("tc protocol version: 0x{}", Integer.toHexString(version));
+
+        // 解析元数据（4字节，可能是时间戳或长度）
+        long metadata = ((encrypted[4] & 0xFFL) << 24) |
+                       ((encrypted[5] & 0xFFL) << 16) |
+                       ((encrypted[6] & 0xFFL) << 8) |
+                       (encrypted[7] & 0xFFL);
+        log.debug("tc metadata: {}", metadata);
+
+        // 提取压缩数据（跳过8字节头部）
+        byte[] compressed = new byte[encrypted.length - 8];
+        System.arraycopy(encrypted, 8, compressed, 0, compressed.length);
+
+        // 先尝试 libcompression 解压
+        try {
+            return decompressWithLibcompression(compressed);
+        } catch (Exception e) {
+            log.warn("libcompression failed, trying Java Inflater: {}", e.getMessage());
+            // 回退到 Java 原生解压
+            return decompressWithJavaInflater(compressed);
+        }
+    }
+
+    /**
+     * 公共方法：解压 BVX2 格式数据
+     *
+     * @param bvx2Data BVX2 压缩的数据
+     * @return 解压后的数据
+     */
+    public byte[] decompressBVX2(byte[] bvx2Data) {
+        return decompressWithLibcompression(bvx2Data);
+    }
+
+    /**
+     * 使用 Apple libcompression.dylib 解压数据
+     *
+     * 从 Frida hook 捕获的信息：
+     * - 压缩数据头部是 "bvx2" (0x62767832)
+     * - 使用的算法有：LZFSE, LZMA, ZLIB, LZ4, LZBITMAP 等
+     * - 算法代码示例：962084864, 962281472, 962330624 等
+     */
+    private byte[] decompressWithLibcompression(byte[] compressed) {
+        MemoryBlock compressedBlock = null;
+        MemoryBlock decompressedBlock = null;
+        MemoryBlock scratchBlock = null;
+
+        try {
+            // 检查是否是 bvx2 格式
+            if (compressed.length >= 4) {
+                String header = String.format("%c%c%c%c",
+                    (char)compressed[0], (char)compressed[1],
+                    (char)compressed[2], (char)compressed[3]);
+                log.debug("Compression format header: {}", header);
+            }
+
+            // 分配内存
+            int maxDecompressedSize = compressed.length * 20;  // 预估解压后大小
+            compressedBlock = emulator.getMemory().malloc(compressed.length, true);
+            decompressedBlock = emulator.getMemory().malloc(maxDecompressedSize, true);
+
+            // 分配 scratch buffer（工作缓冲区），某些压缩算法需要
+            int scratchSize = compressed.length * 4;
+            scratchBlock = emulator.getMemory().malloc(scratchSize, true);
+
+            UnidbgPointer compressedPtr = compressedBlock.getPointer();
+            UnidbgPointer decompressedPtr = decompressedBlock.getPointer();
+            UnidbgPointer scratchPtr = scratchBlock.getPointer();
+
+            compressedPtr.write(compressed);
+
+            // 查找 libcompression.dylib
+            Module libcompression = emulator.getMemory().findModule("libcompression.dylib");
+            if (libcompression == null) {
+                // 尝试加载 libcompression
+                log.info("Loading libcompression.dylib...");
+                MachOLoader loader = (MachOLoader) emulator.getMemory();
+                libcompression = loader.dlopen("/usr/lib/libcompression.dylib");
+                if (libcompression == null) {
+                    throw new RuntimeException("Failed to load libcompression.dylib");
+                }
+            }
+
+            // 查找 compression_decode_buffer 函数
+            // size_t compression_decode_buffer(uint8_t *dst_buffer, size_t dst_size,
+            //                                   const uint8_t *src_buffer, size_t src_size,
+            //                                   void *scratch_buffer, compression_algorithm algorithm);
+            long decodeFunc = libcompression.findSymbolByName("_compression_decode_buffer").getAddress();
+            log.debug("compression_decode_buffer at: 0x{}", Long.toHexString(decodeFunc));
+
+            // 尝试不同的压缩算法
+            // 从 Apple compression.h：
+            // COMPRESSION_LZFSE = 0x801, LZMA = 0x306, ZLIB = 0x205, LZ4 = 0x100, LZBITMAP = 0x702
+            // 从 Frida 捕获：ByteDance 使用自定义算法 2049 (0x0801)
+            int[] algorithms = {
+                2049,   // ByteDance 自定义算法 (从 Frida 捕获)
+                0x801,  // COMPRESSION_LZFSE
+                0x306,  // COMPRESSION_LZMA
+                0x205,  // COMPRESSION_ZLIB
+                0x100,  // COMPRESSION_LZ4
+                0x702   // COMPRESSION_LZBITMAP
+            };
+
+            for (int algorithm : algorithms) {
+                try {
+                    log.debug("Trying algorithm: 0x{}", Integer.toHexString(algorithm));
+
+                    // 调用 compression_decode_buffer，传入 scratch buffer
+                    Number ret = emulator.eFunc(decodeFunc,
+                        decompressedPtr.peer, (long) maxDecompressedSize,
+                        compressedPtr.peer, (long) compressed.length,
+                        scratchPtr.peer,  // scratch_buffer
+                        algorithm);
+
+                    int decompressedSize = ret.intValue();
+                    log.debug("  Decompressed size: {}", decompressedSize);
+
+                    if (decompressedSize > 0 && decompressedSize <= maxDecompressedSize) {
+                        byte[] decompressed = decompressedPtr.getByteArray(0, decompressedSize);
+                        log.info("✓ tc 解密成功！算法: 0x{}, 原始大小: {}, 解压后: {}",
+                            Integer.toHexString(algorithm), compressed.length, decompressedSize);
+
+                        if (props.isVerbose()) {
+                            Inspector.inspect(decompressed, "tc 解压输出");
+                        }
+
+                        return decompressed;
+                    }
+
+                } catch (Exception e) {
+                    log.debug("  Algorithm 0x{} failed: {}", Integer.toHexString(algorithm), e.getMessage());
+                }
+            }
+
+            throw new RuntimeException("All decompression algorithms failed");
+
+        } catch (Exception e) {
+            log.error("tc 解密失败: {}", e.getMessage(), e);
+            throw new RuntimeException("tc decrypt failed: " + e.getMessage(), e);
+        } finally {
+            if (compressedBlock != null) compressedBlock.free();
+            if (decompressedBlock != null) decompressedBlock.free();
+            if (scratchBlock != null) scratchBlock.free();
+        }
+    }
+
+    /**
+     * 使用 Java 原生 Inflater 解压（回退方案）
+     */
+    private byte[] decompressWithJavaInflater(byte[] compressed) {
+        try {
+            java.util.zip.Inflater inflater = new java.util.zip.Inflater(true); // nowrap=true for raw deflate
+            inflater.setInput(compressed);
+
+            byte[] buffer = new byte[compressed.length * 10];
+            int length = inflater.inflate(buffer);
+            inflater.end();
+
+            byte[] result = new byte[length];
+            System.arraycopy(buffer, 0, result, 0, length);
+
+            log.info("Java Inflater 解压成功，原始大小: {}, 解压后: {}", compressed.length, length);
+            return result;
+
+        } catch (Exception e) {
+            log.error("Java Inflater 解压失败", e);
+            throw new RuntimeException("Decompression failed", e);
         }
     }
 

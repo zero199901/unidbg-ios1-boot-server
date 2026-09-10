@@ -10,6 +10,7 @@ import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.util.CollectionUtils;
 
@@ -31,6 +32,7 @@ public class JnitraceHelperTest {
      * 这一步生成模板代码
      */
     @Test
+    @Disabled("代码生成依赖本地 jnitrace 日志，且会写入 src 目录；请在需要时手动执行")
     public void testTpl() throws DecoderException, IOException {
         // jnitrace log 文件 路径
         String mt = "src/test/resources/frida/mt.txt";
@@ -71,7 +73,6 @@ public class JnitraceHelperTest {
         add("JNIEnv->CallStaticBooleanMethod");
     }};
 
-    @Test
     @SneakyThrows
     public String generatorCode(String jnitraceLogFilePath) throws DecoderException, IOException {
 

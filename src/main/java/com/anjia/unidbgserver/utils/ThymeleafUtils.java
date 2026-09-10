@@ -1,6 +1,5 @@
 package com.anjia.unidbgserver.utils;
 
-import lombok.SneakyThrows;
 import org.apache.commons.io.FileUtils;
 import org.thymeleaf.TemplateEngine;
 import org.thymeleaf.context.Context;
@@ -8,6 +7,7 @@ import org.thymeleaf.templatemode.TemplateMode;
 import org.thymeleaf.templateresolver.ClassLoaderTemplateResolver;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -20,7 +20,7 @@ import java.util.Map;
  * @since 2021-09-13 17:55
  */
 public class ThymeleafUtils {
-    @SneakyThrows public static void generateByTemplate(String templateName, Map<String, Object> vars, String destFile) {
+    public static void generateByTemplate(String templateName, Map<String, Object> vars, String destFile) throws IOException {
         TemplateEngine templateEngine = new TemplateEngine();
         ClassLoaderTemplateResolver templateResolver = new ClassLoaderTemplateResolver();
         templateResolver.setPrefix("templates/");
