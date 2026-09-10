@@ -36,3 +36,32 @@ build/
 ### Research artifacts ###
 *.ipa
 *.har
+
+### Local-only research and generated artifacts ###
+# Codex task notes and Python bytecode are workstation state.
+.ai-project/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.bak
+.DS_Store
+
+# Captures, extracted application bundles, device registrations, and run output can
+# be large and may contain device identifiers or session credentials. Keep them local.
+/artifacts/*
+!/artifacts/README.md
+/data/*
+!/data/README.md
+*.log
+stdout.txt
+stderr.txt
+
+# These directories contain an unreviewed local reverse-engineering workspace.
+# Promote only sanitized, reproducible material into docs/ or src/test/resources/.
+/analysis/
+/frida_scripts/
+/reports/
+/research/
+/reverse-engineering/
+/scripts/
+/tools/
